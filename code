@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="ar">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>مغامرة في عالم العلوم</title>
+<style>
+  :root{--bg:#0b1220;--panel:#0f1724;--accent:#2dd4bf;--text:#e6eef3}
+  html,body{height:100%;margin:0;font-family:Tahoma,Arial}
+  body{background:linear-gradient(180deg,#061021 0%, #0b1730 100%);color:var(--text);display:flex;flex-direction:column;align-items:center}
+  .header{width:100%;padding:10px 14px;box-sizing:border-box;display:flex;align-items:center;justify-content:space-between}
+  .title{font-size:18px;font-weight:700}
+  .container{width:100%;max-width:900px;padding:10px;box-sizing:border-box}
+  .game-area{background:radial-gradient(circle at 10% 10%, rgba(255,255,255,0.03), transparent 20%), var(--panel); border-radius:12px;overflow:hidden;position:relative}
+  canvas{display:block;width:100%;height:auto;background:linear-gradient(#082033,#061522)}
+  .ui-row{display:flex;gap:8px;padding:10px;align-items:center}
+  .button{background:rgba(255,255,255,0.06);padding:8px 12px;border-radius:8px;color:var(--text);border:1px solid rgba(255,255,255,0.04);font-weight:600}
+  .badge{background:rgba(255,255,255,0.03);padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,0.04)}
+  .controls{position:absolute;right:10px;bottom:10px;display:flex;flex-direction:column;gap:8px}
+  .dpad{width:120px;height:120px;background:rgba(0,0,0,0.18);border-radius:12px;padding:8px;display:grid;grid-template-columns:1fr 1fr 1fr;grid-template-rows:1fr 1fr 1fr;gap:6px}
+  .dpad button{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.02);border-radius:8px}
+  .center{background:var(--accent);color:#042026;font-weight:700}
+  .modal{position:fixed;left:0;top:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:rgba(2,6,23,0.6);z-index:50}
+  .card{background:linear-gradient(180deg,#071327,#0e2230);padding:16px;border-radius:12px;max-width:420px;width:92%;box-sizing:border-box;border:1px solid rgba(255,255,255,0.04)}
+  input[type=text]{width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:rgba(255,255,255,0.02);color:var(--text);box-sizing:border-box}
+  .row{display:flex;gap:8px;align-items:center}
+  .hint{font-size:13px;color:#bfeee3}
+  .small{font-size:12px;color:#a9c7c4}
+  footer{padding:12px;color:#9fb6b0;font-size:13px;text-align:center}
+  @media (min-width:800px){canvas{height:560px}}
+</style>
+</head>
+<body>
+  <div class="header container">
+    <div class="title">مغامرة في عالم العلوم 🔬</div>
+    <div class="row">
+      <div class="badge" id="score">العناصر: 0</div>
+      <div class="badge" id="life">طاقة: 3</div>
+      <button class="button" id="codesBtn">أدخل كود</button>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="game-area">
+      <canvas id="gameCanvas" width="720" height="480"></canvas>
+      <div class="controls" id="controls">
+        <div class="dpad" id="dpad">
+          <div></div><button data-dir="up">▲</button><div></div>
+          <button data-dir="left">◀</button><button class="center">●</button><button data-dir="right">▶</button>
+          <div></div><button data-dir="down">▼</button><div></div>
+        </div>
+      </div>
+    </div>
+    <div style="height:8px"></div>
+    <div class="ui-row">
+      <div class="button" id="pauseBtn">إيقاف مؤقت</div>
+      <div class="badge small">لمس الأسهم للتحرك، واجمع العناصر واجب على الأسئلة!</div>
+    </div>
+  </div>
+
+  <footer>إنها لعبة تعليمية صغيرة — استمتع واستكشف! ✨</footer>
+
+  <!-- Modal templates -->
+  <div id="modalRoot" style="display:none"></div>
+
+<script>
+/*  لعبة بسيطة: خريطة، لاعب، عناصر لجمع، أسئلة عند الالتقاط
+    - تعمل على المتصفح المحمول
+    - أكواد سهلة لفتح مزايا
+*/
+
+// إعدادات اللعبة
+const GAME = {
+  width: 900, height: 600, scaleToCanvas:true,
+  playerSpeed: 120, // pixels per second
+  initialLives: 3,
+  codes: {
+    'ATOM': { type:'hint', text: 'الذرة تتكون من بروتونات ونيوترونات وإلكترونات.' },
+    'PLANET': { type:'openLevel', level: 2 },
+    'ENERGY': { type:'life', amount: 1 }
+  }
+};
+
+// بدّل حجم الكانفس ليناسب العرض الحقيقي
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+let lastTime = 0;
+let scale = 1;
+
+function resizeCanvas(){
+  const containerWidth = canvas.parentElement.clientWidth;
+  const targetW = Math.min(900, containerWidth-2);
+  scale = targetW / canvas.width;
+  canvas.style.width = targetW + 'px';
+  // height adjusts automatically by aspect ratio
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// حالة اللعبة
+let state = {
+  running: true,
+  score: 0,
+  life: GAME.initialLives,
+  player: { x:100, y:100, size:28 },
+  dir: {x:0,y:0},
+  items: [],
+  level: 1,
+  hintsUnlocked: []
+};
+
+// عناصر أسئلة علمية بسيطة
+const QUESTIONS = {
+  1: [
+    {q:'ما هو كوكبنا؟', options:['المريخ','الأرض','المشتري'], a:1},
+    {q:'ما أصغر جزء في المادة؟', options:['ذرة','خلية','نواة'], a:0}
+  ],
+  2: [
+    {q:'ما مصدر الطاقة في النبات؟', options:['الماء','الشمس','الهواء'], a:1},
+    {q:'أيهم غاز نتنفس؟', options:['الأكسجين','الهيليوم','النيتروجين'], a:0}
+  ]
+};
+
+// انشاء عناصر عشوائية في الخريطة
+function spawnItems(level=1){
+  state.items = [];
+  const count = 5 + level*1;
+  for(let i=0;i<count;i++){
+    state.items.push({
+      id: 'item'+i,
+      x: 60 + Math.random()*(canvas.width-120),
+      y: 60 + Math.random()*(canvas.height-120),
+      size: 20,
+      collected: false,
+      level: level
+    });
+  }
+}
+spawnItems(1);
+
+// رسم عناصر اللعبة
+function draw(){
+  // خلفية
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  // نجوم بسيطة
+  for(let i=0;i<50;i++){
+    ctx.fillStyle = 'rgba(255,255,255,0.03)';
+    const sx = (i*47)%canvas.width;
+    const sy = ((i*71)+30)%canvas.height;
+    ctx.fillRect(sx,sy,1,1);
+  }
+
+  // عناصر
+  state.items.forEach(it=>{
+    if(it.collected) return;
+    ctx.fillStyle = '#f0d36a';
+    ctx.beginPath();
+    ctx.arc(it.x, it.y, it.size, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle='#122c2b';
+    ctx.font = '12px Tahoma';
+    ctx.textAlign='center';
+    ctx.fillText('عنصر', it.x, it.y+4);
+  });
+
+  // اللاعب
+  ctx.fillStyle = '#2dd4bf';
+  ctx.beginPath();
+  ctx.arc(state.player.x, state.player.y, state.player.size, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle='#042026';
+  ctx.font='bold 12px Tahoma';
+  ctx.textAlign='center';
+  ctx.fillText('أنت', state.player.x, state.player.y+4);
+
+  // واجهة صغيرة
+  ctx.fillStyle='rgba(0,0,0,0.25)';
+  ctx.fillRect(8,8,160,44);
+  ctx.fillStyle='#dffbf6';
+  ctx.font='13px Tahoma';
+  ctx.fillText(`المستوى: ${state.level}`, 20, 26);
+  ctx.fillText(`العناصر: ${state.score}`, 20, 44);
+}
+
+// تحديث موقع اللاعب بناءً على dir
+function update(dt){
+  if(!state.running) return;
+  const move = GAME.playerSpeed * dt;
+  state.player.x += state.dir.x * move;
+  state.player.y += state.dir.y * move;
+  // حدود
+  state.player.x = Math.max(20, Math.min(canvas.width-20, state.player.x));
+  state.player.y = Math.max(20, Math.min(canvas.height-20, state.player.y));
+
+  // تحقق من الالتقاط
+  state.items.forEach(it=>{
+    if(it.collected) return;
+    const dx = state.player.x - it.x;
+    const dy = state.player.y - it.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if(dist < state.player.size + it.size - 4){
+      it.collected = true;
+      onCollect(it);
+    }
+  });
+}
+
+function onCollect(item){
+  // نقّل إلى نافذة سؤال
+  state.running = false;
+  openQuestion(item.level);
+}
+
+// أسئلة ومودال بسيط
+const modalRoot = document.getElementById('modalRoot');
+function showModal(html){
+  modalRoot.innerHTML = '';
+  modalRoot.style.display = 'flex';
+  const box = document.createElement('div');
+  box.className='modal';
+  box.innerHTML = `<div class="card">${html}</div>`;
+  box.firstChild.addEventListener('click', e=>{ e.stopPropagation();});
+  modalRoot.appendChild(box);
+  modalRoot.onclick = ()=>{ /* لا نغلق بالنقرة الخلفية لسلامة العملية */ };
+}
+function closeModal(){
+  modalRoot.innerHTML = '';
+  modalRoot.style.display = 'none';
+}
+
+// عرض سؤال للمستوى الحالي
+function openQuestion(level){
+  const pool = QUESTIONS[level] || QUESTIONS[1];
+  const q = pool[Math.floor(Math.random()*pool.length)];
+  const optionsHtml = q.options.map((op,i)=>`<button class="button opt" data-i="${i}" style="margin:6px 0;width:100%">${op}</button>`).join('');
+  const hintSection = state.hintsUnlocked.length ? `<div class="small hint">تلميحات: ${state.hintsUnlocked.join(' • ')}</div>` : '';
+  showModal(`
+    <div>
+      <h3 style="margin-top:0">${q.q}</h3>
+      ${optionsHtml}
+      ${hintSection}
+      <div style="height:10px"></div>
+      <div class="row"><div class="button" id="skipBtn">تخطي (-1 طاقة)</div><div style="flex:1"></div><div class="button" id="closeBtn">إغلاق</div></div>
+    </div>
+  `);
+
+  document.querySelectorAll('.opt').forEach(btn=>{
+    btn.onclick = ()=>{
+      const i = parseInt(btn.dataset.i);
+      if(i === q.a){
+        state.score += 1;
+        updateHUD();
+        closeModal();
+        state.running = true;
+        // إذا جمع كل العناصر انتقل مستوى
+        if(state.items.every(it=>it.collected)) {
+          nextLevel();
+        }
+      } else {
+        state.life -= 1;
+        updateHUD();
+        closeModal();
+        state.running = true;
+        if(state.life <= 0) gameOver();
+      }
+    };
+  });
+
+  document.getElementById('skipBtn').onclick = ()=>{
+    state.life -= 1; updateHUD(); closeModal(); state.running = true;
+    if(state.life <= 0) gameOver();
+  };
+  document.getElementById('closeBtn').onclick = ()=>{ closeModal(); state.running = true; };
+}
+
+// المستوى التالي
+function nextLevel(){
+  state.level += 1;
+  spawnItems(state.level);
+  // مكافأة: طاقة صغيرة
+  state.life = Math.min(5, state.life + 1);
+  updateHUD();
+  // عرض بطاقة قصيرة
+  showModal(`<div><h3>تهانينا!</h3><p>أكملت المستوى ${state.level-1}. انتقل إلى المستوى ${state.level}.</p><div style="height:8px"></div><div class="row"><div class="button" id="okNext">حسناً</div></div></div>`);
+  document.getElementById('okNext').onclick = ()=>{ closeModal(); state.running=true; };
+}
+
+// خسارة
+function gameOver(){
+  showModal(`<div><h3>انتهت الطاقة</h3><p>لقد نفدت طاقتك. تريد إعادة المحاولة؟</p><div style="height:8px"></div><div class="row"><div class="button" id="restart">إعادة محاولة</div><div style="flex:1"></div><div class="button" id="closeGame">خروج</div></div></div>`);
+  document.getElementById('restart').onclick = ()=>{ restart(); };
+  document.getElementById('closeGame').onclick = ()=>{ closeModal(); state.running=false; };
+}
+
+// إعادة التشغيل
+function restart(){
+  state.score=0; state.life=GAME.initialLives; state.level=1;
+  state.player.x=100; state.player.y=100;
+  spawnItems(1); updateHUD(); closeModal(); state.running=true;
+}
+
+// تحديث الواجهات
+function updateHUD(){
+  document.getElementById('score').textContent = `العناصر: ${state.score}`;
+  document.getElementById('life').textContent = `طاقة: ${state.life}`;
+}
+
+// حلقة الرسوم
+function loop(ts){
+  if(!lastTime) lastTime = ts;
+  const dt = Math.min(0.05,(ts-lastTime)/1000);
+  update(dt);
+  draw();
+  lastTime = ts;
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// تحكمات اللمس والأزرار
+document.querySelectorAll('#dpad button[data-dir]').forEach(btn=>{
+  const dir = btn.dataset.dir;
+  const map = {up:[0,-1],down:[0,1],left:[-1,0],right:[1,0]};
+  btn.addEventListener('touchstart', e=>{ e.preventDefault(); state.dir.x = map[dir][0]; state.dir.y = map[dir][1]; });
+  btn.addEventListener('touchend', e=>{ e.preventDefault(); state.dir.x = 0; state.dir.y = 0; });
+  btn.addEventListener('mousedown', e=>{ state.dir.x = map[dir][0]; state.dir.y = map[dir][1]; });
+  btn.addEventListener('mouseup', e=>{ state.dir.x = 0; state.dir.y = 0; });
+});
+
+// دعم السحب للموبايل: لمس في أي مكان ليبقى يتجه اللاعب نحو اللمسة
+canvas.addEventListener('touchstart', e=>{
+  const t = e.touches[0];
+  const r = canvas.getBoundingClientRect();
+  const x = (t.clientX - r.left) * (canvas.width / r.width);
+  const y = (t.clientY - r.top) * (canvas.height / r.height);
+  const dx = x - state.player.x, dy = y - state.player.y;
+  const len = Math.hypot(dx,dy) || 1;
+  state.dir.x = dx/len; state.dir.y = dy/len;
+});
+canvas.addEventListener('touchmove', e=>{
+  const t = e.touches[0];
+  const r = canvas.getBoundingClientRect();
+  const x = (t.clientX - r.left) * (canvas.width / r.width);
+  const y = (t.clientY - r.top) * (canvas.height / r.height);
+  const dx = x - state.player.x, dy = y - state.player.y;
+  const len = Math.hypot(dx,dy) || 1;
+  state.dir.x = dx/len; state.dir.y = dy/len;
+});
+canvas.addEventListener('touchend', e=>{ state.dir.x=0; state.dir.y=0; });
+
+// أزرار UI
+document.getElementById('pauseBtn').onclick = ()=>{
+  state.running = !state.running;
+  document.getElementById('pauseBtn').textContent = state.running ? 'إيقاف مؤقت' : 'استئناف';
+};
+document.getElementById('codesBtn').onclick = ()=>{ openCodeModal(); };
+
+// مودال إدخال الكود
+function openCodeModal(){
+  showModal(`
+    <div>
+      <h3>أدخل كود الفتح أو المساعدة</h3>
+      <input id="codeInput" type="text" placeholder="اكتب الكود هنا (مثال: ATOM)"/>
+      <div style="height:8px"></div>
+      <div class="row">
+        <div class="button" id="applyCode">تطبيق</div>
+        <div style="flex:1"></div>
+        <div class="button" id="closeCode">إلغاء</div>
+      </div>
+      <div style="height:8px"></div>
+      <div class="small hint">أمثلة: ATOM - PLANET - ENERGY</div>
+    </div>
+  `);
+  document.getElementById('applyCode').onclick = ()=>{
+    const val = document.getElementById('codeInput').value.trim().toUpperCase();
+    applyCode(val);
+  };
+  document.getElementById('closeCode').onclick = ()=>{ closeModal(); };
+}
+
+// تطبيق الكود
+function applyCode(code){
+  if(!code){ alert('أدخل كوداً'); return; }
+  const map = GAME.codes;
+  if(map[code]){
+    const effect = map[code];
+    if(effect.type === 'hint'){
+      state.hintsUnlocked.push(effect.text);
+      showModal(`<div><h3>تم تفعيل تلميح</h3><p class="hint">${effect.text}</p><div style="height:8px"></div><div class="row"><div class="button" id="okc">حسناً</div></div></div>`);
+      document.getElementById('okc').onclick = ()=>{ closeModal(); state.running=true; };
+    } else if(effect.type === 'openLevel'){
+      state.level = Math.max(state.level, effect.level);
+      spawnItems(state.level);
+      updateHUD();
+      showModal(`<div><h3>تم فتح مستوى ${effect.level}</h3><p>لقد تم فتح مستوى إضافي.</p><div style="height:8px"></div><div class="row"><div class="button" id="okc2">حسناً</div></div></div>`);
+      document.getElementById('okc2').onclick = ()=>{ closeModal(); state.running=true; };
+    } else if(effect.type === 'life'){
+      state.life += effect.amount;
+      updateHUD();
+      showModal(`<div><h3>طاقة معادة</h3><p>أضيفت ${effect.amount} طاقة.</p><div style="height:8px"></div><div class="row"><div class="button" id="okc3">حسناً</div></div></div>`);
+      document.getElementById('okc3').onclick = ()=>{ closeModal(); };
+    }
+  } else {
+    showModal(`<div><h3>كود غير صحيح</h3><p>حاول كودًا آخر أو تحقق من الكتابة.</p><div style="height:8px"></div><div class="row"><div class="button" id="badOk">حسناً</div></div></div>`);
+    document.getElementById('badOk').onclick = ()=>{ closeModal(); };
+  }
+}
+
+// تحضير الواجهة
+updateHUD();
+
+</script>
+</body>
+</html>
